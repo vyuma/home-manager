@@ -1,36 +1,99 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Home Manager
 
-## Getting Started
+家の管理を行うWebアプリケーション。部屋やアイテムを管理できます。
 
-First, run the development server:
+## 技術スタック
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+- **フレームワーク**: Next.js 16.1.1
+- **言語**: TypeScript
+- **UI**: React 19 + Tailwind CSS 4
+- **ORM**: Prisma 7
+- **データベース**: PostgreSQL 16
+- **コンテナ**: Docker / Docker Compose
+
+## データベース構造
+
+```
+User (ユーザー)
+  └── Home (家)
+        └── Room (部屋)
+              └── Item (アイテム)
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+### モデル詳細
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+| モデル | フィールド | 説明 |
+|--------|-----------|------|
+| User | id, email, name, createdAt, updatedAt | ユーザー情報 |
+| Home | id, name, address, userId, createdAt, updatedAt | 家の情報 |
+| Room | id, name, homeId, createdAt, updatedAt | 部屋の情報 |
+| Item | id, name, description, quantity, roomId, createdAt, updatedAt | アイテムの情報 |
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## セットアップ
 
-## Learn More
+### 必要条件
 
-To learn more about Next.js, take a look at the following resources:
+- Node.js 20+
+- Docker & Docker Compose
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+### 環境変数
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+`.env.example` をコピーして `.env` を作成:
 
-## Deploy on Vercel
+```bash
+cp .env.example .env
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+### 開発環境
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+```bash
+# 依存関係をインストール
+npm install
+
+# データベースを起動
+docker compose up -d db
+
+# マイグレーションを実行
+npx prisma migrate dev
+
+# 開発サーバーを起動
+npm run dev
+```
+
+[http://localhost:3000](http://localhost:3000) でアプリケーションにアクセスできます。
+
+### 本番環境 (Docker)
+
+```bash
+# ビルド & 起動
+docker compose up --build
+
+# マイグレーションを実行 (初回のみ)
+docker compose exec app npx prisma migrate deploy
+```
+
+## スクリプト
+
+| コマンド | 説明 |
+|---------|------|
+| `npm run dev` | 開発サーバーを起動 |
+| `npm run build` | 本番用にビルド |
+| `npm run start` | 本番サーバーを起動 |
+| `npm run lint` | Biomeでリント |
+| `npm run format` | Biomeでフォーマット |
+
+## ディレクトリ構成
+
+```
+home-manager/
+├── src/
+│   ├── app/           # Next.js App Router
+│   └── lib/           # ユーティリティ
+│       └── prisma.ts  # Prismaクライアント
+├── prisma/
+│   ├── schema.prisma  # DBスキーマ
+│   └── migrations/    # マイグレーションファイル
+├── Dockerfile
+├── docker-compose.yml
+└── package.json
+```
