@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import Link from "next/link";
 import {
   ArrowLeft,
@@ -10,8 +10,12 @@ import {
   Loader2,
   RotateCcw,
   ChevronDown,
+  Search,
+  X,
+  Keyboard,
 } from "lucide-react";
 import * as Select from "@radix-ui/react-select";
+import * as Tabs from "@radix-ui/react-tabs";
 import { BarcodeScanner } from "@/components/scanner";
 import { useToast } from "@/components/ui/Toast";
 import { parseAuthors, READING_STATUS_LABELS } from "@/types/book";
@@ -37,6 +41,16 @@ interface ScannedBook {
   isNew?: boolean;
 }
 
+interface SearchResult {
+  id: string;
+  ownedBookId: string;
+  isbn: string | null;
+  title: string;
+  authors: string[];
+  coverImageUrl: string | null;
+  readingStatus: ReadingStatus;
+}
+
 export default function InventoryPage() {
   const { success, error: showError, info } = useToast();
 
@@ -46,6 +60,20 @@ export default function InventoryPage() {
   const [scannedBooks, setScannedBooks] = useState<ScannedBook[]>([]);
   const [isScanning, setIsScanning] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
+
+  // ISBN入力用
+  const [isbnInput, setIsbnInput] = useState("");
+  const [isbnSearching, setIsbnSearching] = useState(false);
+
+  // タイトル検索用
+  const [titleQuery, setTitleQuery] = useState("");
+  const [titleSearchResults, setTitleSearchResults] = useState<SearchResult[]>([]);
+  const [isTitleSearching, setIsTitleSearching] = useState(false);
+  const titleInputRef = useRef<HTMLInputElement>(null);
+  const debounceRef = useRef<NodeJS.Timeout | null>(null);
+
+  // 入力モード
+  const [inputMode, setInputMode] = useState<"scan" | "isbn" | "title">("scan");
 
   // Fetch bookshelves on mount
   useEffect(() => {
@@ -204,6 +232,139 @@ export default function InventoryPage() {
     setScannedBooks([]);
   }, []);
 
+  // ISBN入力で点検
+  const handleIsbnSubmit = useCallback(
+    async (e: React.FormEvent) => {
+      e.preventDefault();
+      const isbn = isbnInput.replace(/[-\s]/g, "").trim();
+      if (!isbn || !selectedShelfId) return;
+
+      // ISBNの形式チェック（10桁または13桁）
+      if (!/^\d{10}$|^\d{13}$/.test(isbn)) {
+        showError("ISBNの形式が正しくありません", "10桁または13桁の数字を入力してください");
+        return;
+      }
+
+      await handleScan(isbn);
+      setIsbnInput("");
+    },
+    [isbnInput, selectedShelfId, handleScan, showError]
+  );
+
+  // タイトル検索
+  const performTitleSearch = useCallback(
+    async (query: string) => {
+      if (!query.trim() || !selectedShelfId) {
+        setTitleSearchResults([]);
+        return;
+      }
+
+      setIsTitleSearching(true);
+
+      try {
+        const response = await fetch(`/api/owned-books?bookshelfId=${selectedShelfId}`);
+        if (!response.ok) throw new Error("検索に失敗しました");
+
+        const ownedBooks = await response.json();
+        const lowerQuery = query.toLowerCase();
+
+        const results: SearchResult[] = ownedBooks
+          .filter((ob: { book: { title: string; authors: string; isbn: string | null } }) => {
+            const authors = parseAuthors(ob.book.authors);
+            return (
+              ob.book.title.toLowerCase().includes(lowerQuery) ||
+              authors.some((a: string) => a.toLowerCase().includes(lowerQuery))
+            );
+          })
+          .filter((ob: { book: { isbn: string | null } }) => {
+            // 既にスキャン済みの本は除外
+            return !scannedBooks.some((sb) => sb.isbn === ob.book.isbn);
+          })
+          .map((ob: { id: string; book: { id: string; isbn: string | null; title: string; authors: string; coverImageUrl: string | null }; readingStatus: ReadingStatus }) => ({
+            id: ob.book.id,
+            ownedBookId: ob.id,
+            isbn: ob.book.isbn,
+            title: ob.book.title,
+            authors: parseAuthors(ob.book.authors),
+            coverImageUrl: ob.book.coverImageUrl,
+            readingStatus: ob.readingStatus,
+          }));
+
+        setTitleSearchResults(results);
+      } catch {
+        showError("検索に失敗しました");
+      } finally {
+        setIsTitleSearching(false);
+      }
+    },
+    [selectedShelfId, scannedBooks, showError]
+  );
+
+  // タイトル検索のデバウンス
+  const handleTitleQueryChange = useCallback(
+    (value: string) => {
+      setTitleQuery(value);
+
+      if (debounceRef.current) {
+        clearTimeout(debounceRef.current);
+      }
+
+      debounceRef.current = setTimeout(() => {
+        performTitleSearch(value);
+      }, 300);
+    },
+    [performTitleSearch]
+  );
+
+  // タイトル検索結果から本を選択
+  const handleSelectFromSearch = useCallback(
+    (result: SearchResult) => {
+      // 既にスキャン済みかチェック
+      const alreadyScanned = scannedBooks.some(
+        (b) => b.isbn === result.isbn || b.id === result.id
+      );
+      if (alreadyScanned) {
+        info("この本は既に点検済みです");
+        return;
+      }
+
+      const newScannedBook: ScannedBook = {
+        id: result.id,
+        isbn: result.isbn || "",
+        title: result.title,
+        authors: result.authors,
+        coverImageUrl: result.coverImageUrl,
+        readingStatus: result.readingStatus,
+        ownedBookId: result.ownedBookId,
+        found: true,
+        isNew: true,
+      };
+
+      setScannedBooks((prev) => [newScannedBook, ...prev]);
+      success("本を確認しました", result.title);
+
+      // 検索結果から削除
+      setTitleSearchResults((prev) => prev.filter((r) => r.id !== result.id));
+
+      // isNew フラグを解除
+      setTimeout(() => {
+        setScannedBooks((prev) =>
+          prev.map((b) => (b.id === result.id ? { ...b, isNew: false } : b))
+        );
+      }, 1000);
+    },
+    [scannedBooks, success, info]
+  );
+
+  // デバウンスのクリーンアップ
+  useEffect(() => {
+    return () => {
+      if (debounceRef.current) {
+        clearTimeout(debounceRef.current);
+      }
+    };
+  }, []);
+
   const selectedShelf = bookshelves.find((s) => s.id === selectedShelfId);
 
   return (
@@ -291,22 +452,186 @@ export default function InventoryPage() {
           )}
         </div>
 
-        {/* Scanner */}
+        {/* Input Mode Tabs */}
         {selectedShelfId && (
-          <div className="mb-6">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-sm font-medium text-text-secondary">
-                バーコードスキャン
-              </span>
-              {isSearching && (
-                <span className="flex items-center gap-1 text-xs text-accent-cyan">
-                  <Loader2 className="w-3 h-3 animate-spin" />
-                  検索中...
+          <Tabs.Root
+            value={inputMode}
+            onValueChange={(v) => setInputMode(v as "scan" | "isbn" | "title")}
+            className="mb-6"
+          >
+            <Tabs.List className="flex gap-1 p-1 bg-bg-tertiary rounded-xl mb-4">
+              <Tabs.Trigger
+                value="scan"
+                className="flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-all data-[state=active]:bg-accent-cyan data-[state=active]:text-black data-[state=inactive]:text-text-secondary data-[state=inactive]:hover:text-text-primary"
+              >
+                スキャン
+              </Tabs.Trigger>
+              <Tabs.Trigger
+                value="isbn"
+                className="flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-all data-[state=active]:bg-accent-cyan data-[state=active]:text-black data-[state=inactive]:text-text-secondary data-[state=inactive]:hover:text-text-primary"
+              >
+                <span className="flex items-center justify-center gap-1">
+                  <Keyboard className="w-4 h-4" />
+                  ISBN入力
                 </span>
-              )}
-            </div>
-            <BarcodeScanner onScan={handleScan} continuous paused={isSearching} />
-          </div>
+              </Tabs.Trigger>
+              <Tabs.Trigger
+                value="title"
+                className="flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-all data-[state=active]:bg-accent-cyan data-[state=active]:text-black data-[state=inactive]:text-text-secondary data-[state=inactive]:hover:text-text-primary"
+              >
+                <span className="flex items-center justify-center gap-1">
+                  <Search className="w-4 h-4" />
+                  タイトル
+                </span>
+              </Tabs.Trigger>
+            </Tabs.List>
+
+            {/* バーコードスキャン */}
+            <Tabs.Content value="scan">
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm font-medium text-text-secondary">
+                    バーコードスキャン
+                  </span>
+                  {isSearching && (
+                    <span className="flex items-center gap-1 text-xs text-accent-cyan">
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                      検索中...
+                    </span>
+                  )}
+                </div>
+                <BarcodeScanner onScan={handleScan} continuous paused={isSearching} />
+              </div>
+            </Tabs.Content>
+
+            {/* ISBN入力 */}
+            <Tabs.Content value="isbn">
+              <form onSubmit={handleIsbnSubmit} className="glass-card p-4">
+                <label className="block text-sm font-medium text-text-secondary mb-2">
+                  ISBNを入力
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={isbnInput}
+                    onChange={(e) => setIsbnInput(e.target.value)}
+                    placeholder="978-4-XXXX-XXXX-X"
+                    className="input-glass flex-1"
+                    autoComplete="off"
+                    inputMode="numeric"
+                  />
+                  <button
+                    type="submit"
+                    className="btn-primary px-6 flex items-center gap-2"
+                    disabled={!isbnInput.trim() || isbnSearching}
+                  >
+                    {isbnSearching ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Check className="w-4 h-4" />
+                    )}
+                    確認
+                  </button>
+                </div>
+                <p className="text-text-muted text-xs mt-2">
+                  ハイフンありでもなしでも入力できます
+                </p>
+              </form>
+            </Tabs.Content>
+
+            {/* タイトル検索 */}
+            <Tabs.Content value="title">
+              <div className="glass-card p-4">
+                <label className="block text-sm font-medium text-text-secondary mb-2">
+                  タイトルまたは著者で検索
+                </label>
+                <div className="relative mb-3">
+                  <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-text-muted" />
+                  <input
+                    ref={titleInputRef}
+                    type="text"
+                    value={titleQuery}
+                    onChange={(e) => handleTitleQueryChange(e.target.value)}
+                    placeholder="タイトルまたは著者名を入力..."
+                    className="input-glass w-full pl-12 pr-12"
+                  />
+                  {titleQuery && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setTitleQuery("");
+                        setTitleSearchResults([]);
+                        titleInputRef.current?.focus();
+                      }}
+                      className="absolute right-4 top-1/2 -translate-y-1/2 p-1 rounded-full hover:bg-white/10 transition-colors"
+                    >
+                      <X className="w-4 h-4 text-text-muted" />
+                    </button>
+                  )}
+                </div>
+
+                {/* 検索結果 */}
+                {isTitleSearching ? (
+                  <div className="py-6 text-center">
+                    <Loader2 className="w-5 h-5 animate-spin text-accent-cyan mx-auto mb-2" />
+                    <p className="text-text-secondary text-sm">検索中...</p>
+                  </div>
+                ) : titleQuery && titleSearchResults.length === 0 ? (
+                  <div className="py-6 text-center text-text-secondary text-sm">
+                    「{titleQuery}」に一致する本が見つかりませんでした
+                  </div>
+                ) : titleSearchResults.length > 0 ? (
+                  <div className="space-y-2 max-h-64 overflow-y-auto">
+                    {titleSearchResults.map((result) => (
+                      <button
+                        key={result.id}
+                        onClick={() => handleSelectFromSearch(result)}
+                        className="w-full p-3 bg-bg-tertiary hover:bg-white/10 rounded-lg transition-colors text-left flex gap-3"
+                      >
+                        {/* Book Cover */}
+                        <div className="w-10 flex-shrink-0">
+                          <div className="aspect-[2/3] rounded bg-bg-secondary overflow-hidden">
+                            {result.coverImageUrl ? (
+                              <img
+                                src={result.coverImageUrl}
+                                alt={result.title}
+                                className="w-full h-full object-cover"
+                              />
+                            ) : (
+                              <div className="w-full h-full flex items-center justify-center">
+                                <BookOpen className="w-4 h-4 text-text-muted" />
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Book Info */}
+                        <div className="flex-1 min-w-0">
+                          <h4 className="font-medium text-sm line-clamp-1">
+                            {result.title}
+                          </h4>
+                          {result.authors.length > 0 && (
+                            <p className="text-text-muted text-xs truncate">
+                              {result.authors.join(", ")}
+                            </p>
+                          )}
+                        </div>
+
+                        {/* Action Icon */}
+                        <div className="flex-shrink-0 flex items-center">
+                          <Check className="w-5 h-5 text-accent-green" />
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="py-6 text-center text-text-muted text-sm">
+                    この本棚の本を検索できます
+                  </div>
+                )}
+              </div>
+            </Tabs.Content>
+          </Tabs.Root>
         )}
 
         {/* Scanned Books List */}
